@@ -90,7 +90,6 @@ scene.add(key);
 const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 100);
 const CAM_EL = THREE.MathUtils.degToRad(9);
 const LOOK = new THREE.Vector3(0, -0.75, 0);
-const camBase = new THREE.Vector3();      // un-shaken camera position (pop shake offsets from this)
 function frameCamera() {
   const aspect = innerWidth / innerHeight;
   camera.aspect = aspect;
@@ -99,7 +98,6 @@ function frameCamera() {
   camera.position.set(LOOK.x, LOOK.y + d * Math.sin(CAM_EL), LOOK.z + d * Math.cos(CAM_EL));
   camera.lookAt(LOOK);
   camera.updateProjectionMatrix();
-  camBase.copy(camera.position);
 }
 frameCamera();
 
@@ -203,82 +201,15 @@ let neckIdx = 0; for (let i = 1; i < N; i++) if (rest[i * 3 + 1] < rest[neckIdx 
 /* ------------------------------------------------------------------ *
  *  Materials / scene graph
  * ------------------------------------------------------------------ */
-// Printed foil: dark metallic blue with yellow smileys. Two canvases share one layout:
-//  - colour map (blue foil + yellow ink; eyes/smile left as bare foil)
-//  - metal/rough map (three.js reads roughness from G, metalness from B) so the ink is matte, the foil chrome
-function makeSmileyMaps() {
-  const W = 2048, H = 1024;
-  const mk = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; return [c, c.getContext('2d')]; };
-  const [cc, cg] = mk(), [mc, mg] = mk();
-  cg.fillStyle = '#1b3d8f'; cg.fillRect(0, 0, W, H);
-  mg.fillStyle = 'rgb(0,40,255)'; mg.fillRect(0, 0, W, H);          // rough ~0.16, fully metallic
-  const rnd = mulberry32(42);
-  // equirectangular UVs: near the equator a circle stays a circle; keep smileys in the middle band
-  // sphere direction for a texel (matches THREE.SphereGeometry's UV layout)
-  const dirOf = (px, py) => {
-    const phi = (px / W) * Math.PI * 2, th = (py / H) * Math.PI;
-    return [-Math.cos(phi) * Math.sin(th), Math.cos(th), Math.sin(phi) * Math.sin(th)];
-  };
-  // the big smiley faces +z (toward the camera when spin = 0), a touch above the equator
-  const BIG_C = new THREE.Vector3(0, 0.12, 1).normalize();
-  const BIG_R = Math.sin(THREE.MathUtils.degToRad(37));               // radius in orthographic tangent-plane units
-  const bigR = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), BIG_C).normalize();
-  const bigU = new THREE.Vector3().crossVectors(BIG_C, bigR);
-  function smiley(g, x, y, r, rot, ink, bare, wrap = true) {
-    for (const ox of wrap ? [-W, 0, W] : [0]) {
-      g.save(); g.translate(x + ox, y); g.rotate(rot);
-      g.fillStyle = ink; g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.fill();
-      g.fillStyle = bare; g.strokeStyle = bare; g.lineCap = 'round';
-      g.beginPath(); g.ellipse(-r * 0.34, -r * 0.24, r * 0.1, r * 0.17, 0, 0, Math.PI * 2); g.fill();
-      g.beginPath(); g.ellipse(r * 0.34, -r * 0.24, r * 0.1, r * 0.17, 0, 0, Math.PI * 2); g.fill();
-      g.lineWidth = r * 0.11;
-      g.beginPath(); g.arc(0, r * 0.02, r * 0.56, Math.PI * 0.18, Math.PI * 0.82); g.stroke();
-      g.restore();
-    }
-  }
-
-  // Big smiley: drawn flat on a decal, then projected onto the sphere so it stays round
-  // instead of being smeared by the equirectangular layout.
-  const S = 512;
-  const decal = (ink, bare) => {
-    const c = document.createElement('canvas'); c.width = c.height = S;
-    smiley(c.getContext('2d'), S / 2, S / 2, S / 2 - 3, 0, ink, bare, false);
-    return c.getContext('2d').getImageData(0, 0, S, S).data;
-  };
-  const dc = decal('#ffd21f', '#1b3d8f'), dm = decal('rgb(0,150,30)', 'rgb(0,40,255)');
-  const ci = cg.getImageData(0, 0, W, H), mi = mg.getImageData(0, 0, W, H);
-  const cosMax = Math.cos(Math.asin(BIG_R) + 0.02);
-  for (let py = 0; py < H; py++) for (let px = 0; px < W; px++) {
-    const [x, y, z] = dirOf(px, py);
-    if (x * BIG_C.x + y * BIG_C.y + z * BIG_C.z < cosMax) continue;
-    const sx = x * bigR.x + y * bigR.y + z * bigR.z, sy = x * bigU.x + y * bigU.y + z * bigU.z;
-    const u = Math.round((sx / BIG_R * 0.5 + 0.5) * (S - 1)), v = Math.round((-sy / BIG_R * 0.5 + 0.5) * (S - 1));
-    if (u < 0 || v < 0 || u >= S || v >= S) continue;
-    const di = (v * S + u) * 4, a = dc[di + 3] / 255;
-    if (a <= 0) continue;
-    const oi = (py * W + px) * 4;
-    for (let k = 0; k < 3; k++) {
-      ci.data[oi + k] += (dc[di + k] - ci.data[oi + k]) * a;
-      mi.data[oi + k] += (dm[di + k] - mi.data[oi + k]) * a;
-    }
-  }
-  cg.putImageData(ci, 0, 0); mg.putImageData(mi, 0, 0);
-  const map = new THREE.CanvasTexture(cc); map.colorSpace = THREE.SRGBColorSpace;
-  const mr = new THREE.CanvasTexture(mc);
-  for (const t of [map, mr]) { t.wrapS = THREE.RepeatWrapping; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); }
-  return { map, mr };
-}
-const smileys = makeSmileyMaps();
+// plain dark-blue metallic foil (mylar)
 const foilNormal = makeFoilNormalMap(IS_COARSE ? 384 : 512);
 const foil = new THREE.MeshPhysicalMaterial({
-  color: 0xffffff, map: smileys.map,
-  metalness: 1, metalnessMap: smileys.mr, roughness: 1, roughnessMap: smileys.mr,
+  color: 0x1b3d8f, metalness: 1, roughness: 0.16,
   normalMap: foilNormal, normalScale: new THREE.Vector2(0.05, 0.05),
   clearcoat: 1, clearcoatRoughness: 0.08,
   iridescence: 0.12, iridescenceIOR: 1.6, iridescenceThicknessRange: [200, 420],
 });
-// knot + neck: plain dark-blue foil (the printed map would smear on these tiny parts)
-const knotFoil = new THREE.MeshPhysicalMaterial({ color: 0x1b3d8f, metalness: 1, roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.1 });
+const knotFoil = foil;
 
 const body = new THREE.Group();       // position / tilt (floating + recoil)
 const balloon = new THREE.Group();    // spin + inflation
@@ -439,11 +370,10 @@ const _n = new THREE.Vector3();
 
 canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
-  ensureAudio();
   showNeedle(e.clientX, e.clientY);
   scene.updateMatrixWorld(true);
-  const p = popped || appear < 0.9 ? null : hitLocal(e.clientX, e.clientY);
-  if (!p) { ndl.jab = 14; return; }      // stab at thin air (or at a balloon that isn't there)
+  const p = hitLocal(e.clientX, e.clientY);
+  if (!p) { ndl.jab = 14; return; }      // stab at thin air
   try { canvas.setPointerCapture(e.pointerId); } catch { /* capture is a nicety; never let it drop the press */ }
   const n = p.normal;
   const t1 = new THREE.Vector3().crossVectors(n, Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize();
@@ -471,7 +401,7 @@ function release(e) {
   presses.delete(e.pointerId);
   if (!presses.size) ndl.target = 0;
   // a quick tap leaves a springy outward bump: give the skin under the needle an outward kick
-  if (performance.now() - pr.t0 < 220 && pr.dragLen < 0.08) { kickBump(pr.p, 2.4); strain += TAP_STRAIN; }
+  if (performance.now() - pr.t0 < 220 && pr.dragLen < 0.08) kickBump(pr.p, 2.4);
   if (e.pointerType !== 'mouse' && !presses.size) setTimeout(() => { if (!presses.size) needle.classList.remove('on'); }, 900);
 }
 canvas.addEventListener('pointerup', release);
@@ -491,122 +421,6 @@ function kickBump(p, strength) {
   }
   awake = true;
 }
-
-/* ------------------------------------------------------------------ *
- *  Strain & popping
- *  Holding the needle in, pulling the skin near its limit, or rapid-fire
- *  taps all build strain. The balloon swells and shivers as a warning;
- *  at 1.0 it pops into confetti, then a fresh one inflates.
- * ------------------------------------------------------------------ */
-const HOLD_RATE = 0.65;      // strain/sec while the needle touches the skin (=> ~1.5s hold pops it)
-const PULL_RATE = 2.2;       // extra strain/sec at a full-length pull (scaled by (pull/max)^2)
-const TAP_STRAIN = 0.24;     // each quick jab (=> ~4-5 rapid jabs pop it)
-const RELAX_RATE = 0.45;     // strain bleeds off when you let go
-const RESPAWN_AFTER = 3.0;   // seconds
-let strain = 0, popped = false, popT = 0, appear = 1, appearV = 0, shake = 0;
-
-// --- confetti + foil shreds (instanced, so hundreds of pieces cost two draw calls)
-const PALETTE = [0xffd21f, 0xffd21f, 0x2f6bff, 0xff5fa2, 0xffffff, 0x3ddc97, 0xff8a3d].map(c => new THREE.Color(c));
-function makeBits(count, geom, mat) {
-  const m = new THREE.InstancedMesh(geom, mat, count);
-  m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); m.frustumCulled = false;
-  const bits = Array.from({ length: count }, () => ({
-    p: new THREE.Vector3(), v: new THREE.Vector3(), axis: new THREE.Vector3(1, 0, 0),
-    ang: 0, angV: 0, life: 0, ph: Math.random() * 6.28, landed: false,
-  }));
-  const zero = new THREE.Matrix4().makeScale(0, 0, 0);
-  for (let i = 0; i < count; i++) { m.setMatrixAt(i, zero); m.setColorAt(i, PALETTE[0]); }
-  scene.add(m);
-  return { m, bits };
-}
-const confetti = makeBits(IS_COARSE ? 220 : 340, new THREE.PlaneGeometry(0.075, 0.042),
-  new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, roughness: 0.45, metalness: 0.25 }));
-const shreds = makeBits(28, new THREE.CircleGeometry(0.12, 3),
-  new THREE.MeshPhysicalMaterial({ side: THREE.DoubleSide, metalness: 1, roughness: 0.2, clearcoat: 1 }));
-const SHRED_COLORS = [new THREE.Color(0x1b3d8f), new THREE.Color(0x1b3d8f), new THREE.Color(0xffd21f)];
-
-const _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _c = new THREE.Vector3(), _v = new THREE.Vector3();
-function burst(sys, colors, speedLo, speedHi, lifeLo, lifeHi) {
-  balloon.getWorldPosition(_c);
-  for (let i = 0; i < sys.bits.length; i++) {
-    const b = sys.bits[i], k = (Math.random() * N) | 0;
-    b.p.set(posAttr.array[k * 3], posAttr.array[k * 3 + 1], posAttr.array[k * 3 + 2]);
-    balloon.localToWorld(b.p);
-    _v.subVectors(b.p, _c).normalize();
-    b.v.copy(_v).multiplyScalar(speedLo + Math.random() * (speedHi - speedLo));
-    b.v.y += 0.8 + Math.random() * 1.2;
-    b.axis.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
-    b.ang = Math.random() * 6.28; b.angV = (Math.random() - 0.5) * 22;
-    b.life = lifeLo + Math.random() * (lifeHi - lifeLo); b.landed = false;
-    sys.m.setColorAt(i, colors[(Math.random() * colors.length) | 0]);
-  }
-  sys.m.instanceColor.needsUpdate = true;
-}
-function stepBits(sys, dt, grav, drag, flutter) {
-  for (let i = 0; i < sys.bits.length; i++) {
-    const b = sys.bits[i];
-    if (b.life <= 0) continue;
-    b.life -= dt;
-    if (!b.landed) {
-      b.v.y -= grav * dt;
-      b.v.multiplyScalar(Math.exp(-drag * dt));
-      b.v.x += Math.sin(t * 6 + b.ph) * flutter * dt;
-      b.v.z += Math.cos(t * 5 + b.ph) * flutter * dt;
-      b.p.addScaledVector(b.v, dt);
-      b.ang += b.angV * dt;
-      if (b.p.y < FLOOR_Y + 0.004) { b.p.y = FLOOR_Y + 0.004; b.landed = true; b.axis.set(1, 0, 0); b.ang = -Math.PI / 2; }
-    }
-    _q.setFromAxisAngle(b.axis, b.ang);
-    _s.setScalar(b.life <= 0 ? 0 : Math.min(1, b.life / 0.7));
-    sys.m.setMatrixAt(i, _m4.compose(b.p, _q, _s));
-  }
-  sys.m.instanceMatrix.needsUpdate = true;
-}
-
-// --- pop sound: a filtered noise crack + a short low thump (WebAudio, unlocked by the first touch)
-let actx = null;
-function ensureAudio() {
-  try {
-    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
-    if (actx.state === 'suspended') actx.resume();
-  } catch { actx = null; }
-}
-function playPop() {
-  if (!actx) return;
-  const t0 = actx.currentTime, len = 0.3;
-  const buf = actx.createBuffer(1, Math.floor(actx.sampleRate * len), actx.sampleRate), d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) ** 6;
-  const src = actx.createBufferSource(); src.buffer = buf;
-  const hp = actx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 700;
-  const g = actx.createGain(); g.gain.setValueAtTime(0.9, t0); g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.25);
-  src.connect(hp).connect(g).connect(actx.destination); src.start(t0);
-  const o = actx.createOscillator(); o.frequency.setValueAtTime(190, t0); o.frequency.exponentialRampToValueAtTime(45, t0 + 0.12);
-  const og = actx.createGain(); og.gain.setValueAtTime(0.7, t0); og.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
-  o.connect(og).connect(actx.destination); o.start(t0); o.stop(t0 + 0.2);
-}
-
-function pop() {
-  popped = true; popT = 0; strain = 0; shake = 1;
-  scene.updateMatrixWorld(true);
-  burst(confetti, PALETTE, 1.8, 5.2, 3.5, 6);
-  burst(shreds, SHRED_COLORS, 1.2, 3.2, 2.5, 4);
-  presses.clear(); ndl.target = 0; ndl.jab = 20;
-  balloon.visible = false;
-  ropePinned = false;                    // the ribbon drops
-  playPop();
-}
-function respawn() {
-  popped = false;
-  disp.fill(0); vel.fill(0); posAttr.array.set(rest); posAttr.needsUpdate = true;
-  geo.attributes.normal.array.set(restN); geo.attributes.normal.needsUpdate = true;
-  awake = false; infl = inflV = 0;
-  balloon.visible = true; appear = 0; appearV = 0;
-  bodyPos.set(0, -0.5, 0); bodyVel.set(0, 1.4, 0);
-  ropePinned = true;
-  for (let i = 0; i < ROPE_N; i++) { rope[i].p.set(0, -1.6 - i * SEG, 0); rope[i].q.copy(rope[i].p); }
-  hint.style.opacity = 1; setTimeout(() => { if (!popped) hint.style.opacity = 0; }, 2200);
-}
-let ropePinned = true;
 
 /* ------------------------------------------------------------------ *
  *  Loop
@@ -645,26 +459,11 @@ renderer.setAnimationLoop(() => {
     dentSum += pr.dentK * pr.s;
   }
 
-  // --- strain: hold / hard pull / rapid jabs build it; past 1.0 the balloon pops ---
-  if (!popped) {
-    let rate = 0;
-    // any needle contact builds strain (the recoil can turn a poke into a tiny "pull", so don't gate on dentK);
-    // pulling adds more, rising steeply toward the stretch limit
-    for (const pr of presses.values()) rate += pr.s * HOLD_RATE + (pr.dragLen / STRETCH_MAX) ** 2 * PULL_RATE;
-    strain = rate > 0 ? strain + rate * dt : Math.max(0, strain - RELAX_RATE * dt);
-    if (strain >= 1) pop();
-  } else if ((popT += dt) > RESPAWN_AFTER) respawn();
-  const warn = smooth(0.45, 1, strain);  // 0 = calm, 1 = about to go
-
   // --- whole-balloon float: bob + recoil spring + gentle tug toward a pull ---
   bodyGoal.set(Math.sin(t * 0.43) * 0.06, Math.sin(t * 0.8) * 0.09, 0).addScaledVector(_tug, 0.22);
   bodyVel.addScaledVector(_a.subVectors(bodyGoal, bodyPos), 9 * dt).multiplyScalar(Math.exp(-dt * 1.6));
   bodyPos.addScaledVector(bodyVel, dt);
   body.position.copy(bodyPos);
-  if (warn > 0) body.position.add(_v.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.05 * warn * warn));
-  appearV += (70 * (1 - appear) - 2 * 0.32 * Math.sqrt(70) * appearV) * dt;   // bouncy inflate-in after a respawn
-  appear += appearV * dt;
-  body.scale.setScalar(Math.max(0.001, appear));
   body.rotation.z = -bodyVel.x * 0.18 + Math.sin(t * 0.37) * 0.03;
   body.rotation.x = bodyVel.z * 0.18;
   spinVel += (0.12 - spinVel) * dt * 0.6;
@@ -674,10 +473,9 @@ renderer.setAnimationLoop(() => {
   // pressing in squeezes air elsewhere: the whole balloon puffs up a touch
   inflV += (120 * (dentSum * 0.025 - infl) - 2 * 0.2 * Math.sqrt(120) * inflV) * dt;
   infl += inflV * dt;
-  const swell = infl + warn * 0.07;      // strained balloons visibly over-inflate
-  balloon.scale.set(1 + swell, 1 + swell * 0.7, 1 + swell);
+  balloon.scale.set(1 + infl, 1 + infl * 0.7, 1 + infl);
 
-  if (awake && !popped) stepSkin(dt);
+  if (awake) stepSkin(dt);
 
   // --- knot follows the (deformed) neck vertex ---
   const pa = posAttr.array;
@@ -686,8 +484,8 @@ renderer.setAnimationLoop(() => {
   // --- ribbon (verlet) ---
   scene.updateMatrixWorld(true);
   _knot.set(0, -0.17, 0); knot.localToWorld(_knot);
-  if (ropePinned) { rope[0].p.copy(_knot); rope[0].q.copy(_knot); }
-  for (let i = ropePinned ? 1 : 0; i < ROPE_N; i++) {
+  rope[0].p.copy(_knot); rope[0].q.copy(_knot);
+  for (let i = 1; i < ROPE_N; i++) {
     const r = rope[i];
     _a.subVectors(r.p, r.q).multiplyScalar(0.985);
     r.q.copy(r.p);
@@ -695,15 +493,13 @@ renderer.setAnimationLoop(() => {
     r.p.x += Math.sin(t * 1.3 + i * 0.4) * 0.00025 * i;     // faint air drift
   }
   for (let it = 0; it < 14; it++) {
-    if (ropePinned) rope[0].p.copy(_knot);
+    rope[0].p.copy(_knot);
     for (let i = 1; i < ROPE_N; i++) {
       const a = rope[i - 1].p, b = rope[i].p;
       _a.subVectors(b, a); const len = _a.length() || 1e-6, diff = (len - SEG) / len;
-      if (i === 1 && ropePinned) b.addScaledVector(_a, -diff);
+      if (i === 1) b.addScaledVector(_a, -diff);
       else { a.addScaledVector(_a, diff * 0.5); b.addScaledVector(_a, -diff * 0.5); }
     }
-    // a dropped ribbon piles up on the floor instead of falling through it
-    for (const r of rope) if (r.p.y < FLOOR_Y + 0.008) { r.p.y = FLOOR_Y + 0.008; r.q.x = r.p.x; r.q.z = r.p.z; r.q.y = r.p.y; }
   }
   if (ribbon) { ribbon.geometry.dispose(); scene.remove(ribbon); }
   ribbon = new THREE.Mesh(new THREE.TubeGeometry(ropeCurve, 64, 0.0075, 5, false), ribbonMat);
@@ -712,17 +508,8 @@ renderer.setAnimationLoop(() => {
   // shadow tracks the balloon
   shadow.position.x = bodyPos.x; shadow.position.z = bodyPos.z;
   const lift = clamp((bodyPos.y + 0.1) / 0.3, 0, 1);
-  shadowMat.opacity = popped ? 0 : (0.75 - lift * 0.2) * Math.min(1, appear);
-  shadow.scale.setScalar(1 + lift * 0.08 + swell * 2);
-
-  // confetti + shreds
-  stepBits(confetti, dt, 3.6, 2.4, 1.6);
-  stepBits(shreds, dt, 7, 1.1, 0.6);
-
-  // pop camera shake
-  shake *= Math.exp(-dt * 7);
-  camera.position.copy(camBase);
-  if (shake > 0.01) camera.position.add(_v.set(Math.random() - 0.5, Math.random() - 0.5, 0).multiplyScalar(0.12 * shake));
+  shadowMat.opacity = 0.75 - lift * 0.2;
+  shadow.scale.setScalar(1 + lift * 0.08 + infl * 2);
 
   drawNeedle(dt);
   renderer.render(scene, camera);
