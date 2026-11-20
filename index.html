@@ -7,7 +7,7 @@
 <style>
   html, body {
     margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none;
-    background: radial-gradient(ellipse 120% 90% at 50% 38%, #fbfbfa 0%, #ececeb 48%, #d1d1cf 100%);
+    background: radial-gradient(ellipse 120% 90% at 50% 38%, #1a1a1d 0%, #0b0b0d 55%, #000 100%);
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
     -webkit-tap-highlight-color: transparent;
   }
@@ -15,7 +15,7 @@
   .hint {
     position: fixed; left: 0; right: 0; bottom: calc(28px + env(safe-area-inset-bottom)); text-align: center; pointer-events: none;
     font: 500 12px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
-    letter-spacing: .14em; text-transform: uppercase; color: #8d8d8a; transition: opacity 1s ease;
+    letter-spacing: .14em; text-transform: uppercase; color: #77777c; transition: opacity 1s ease;
   }
   /* needle cursor: the wrapper sits exactly on the pointer; the svg is laid out so the tip is at (0,0) */
   #needle {
@@ -94,7 +94,8 @@ function frameCamera() {
   const aspect = innerWidth / innerHeight;
   camera.aspect = aspect;
   const k = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
-  const d = Math.max(5.0 / k, 3.6 / (k * aspect));
+  const FAR = 1.25;   // 1/0.8 → balloon appears 20% smaller, as if further away
+  const d = FAR * Math.max(5.0 / k, 3.6 / (k * aspect));
   camera.position.set(LOOK.x, LOOK.y + d * Math.sin(CAM_EL), LOOK.z + d * Math.cos(CAM_EL));
   camera.lookAt(LOOK);
   camera.updateProjectionMatrix();
@@ -204,15 +205,16 @@ let neckIdx = 0; for (let i = 1; i < N; i++) if (rest[i * 3 + 1] < rest[neckIdx 
 // plain dark-blue metallic foil (mylar)
 const foilNormal = makeFoilNormalMap(IS_COARSE ? 384 : 512);
 const foil = new THREE.MeshPhysicalMaterial({
-  color: 0x1b3d8f, metalness: 1, roughness: 0.16,
+  color: 0xff6fae, metalness: 1, roughness: 0.16,
   normalMap: foilNormal, normalScale: new THREE.Vector2(0.05, 0.05),
   clearcoat: 1, clearcoatRoughness: 0.08,
-  iridescence: 0.12, iridescenceIOR: 1.6, iridescenceThicknessRange: [200, 420],
+  iridescence: 0.25, iridescenceIOR: 1.6, iridescenceThicknessRange: [200, 420],
 });
 const knotFoil = foil;
 
 const body = new THREE.Group();       // position / tilt (floating + recoil)
 const balloon = new THREE.Group();    // spin + inflation
+const BALLOON_S = 0.72;              // smaller balloon so it reads as far away, matching the floor glow
 scene.add(body); body.add(balloon);
 const mesh = new THREE.Mesh(geo, foil);
 mesh.frustumCulled = false;
@@ -245,7 +247,7 @@ const FLOOR_Y = -3.05;
 function shadowTex() {
   const c = document.createElement('canvas'); c.width = c.height = 256;
   const g = c.getContext('2d'), gr = g.createRadialGradient(128, 128, 0, 128, 128, 128);
-  gr.addColorStop(0, 'rgba(30,30,32,0.55)'); gr.addColorStop(0.45, 'rgba(30,30,32,0.22)'); gr.addColorStop(1, 'rgba(30,30,32,0)');
+  gr.addColorStop(0, 'rgba(255,95,170,0.32)'); gr.addColorStop(0.45, 'rgba(255,95,170,0.12)'); gr.addColorStop(1, 'rgba(255,95,170,0)');
   g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
@@ -473,7 +475,7 @@ renderer.setAnimationLoop(() => {
   // pressing in squeezes air elsewhere: the whole balloon puffs up a touch
   inflV += (120 * (dentSum * 0.025 - infl) - 2 * 0.2 * Math.sqrt(120) * inflV) * dt;
   infl += inflV * dt;
-  balloon.scale.set(1 + infl, 1 + infl * 0.7, 1 + infl);
+  balloon.scale.set(BALLOON_S * (1 + infl), BALLOON_S * (1 + infl * 0.7), BALLOON_S * (1 + infl));
 
   if (awake) stepSkin(dt);
 
